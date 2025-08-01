@@ -37,12 +37,12 @@ class GAT(nn.Module):
         total_sim = 0
         for fs in f_s:
             with torch.no_grad():
-                sim = torch.cosine_similarity(fs, f_t, dim=0)
+                sim = (torch.cosine_similarity(fs, f_t, dim=0) + 1) / 2
                 total_sim += sim
         F_s = 0
         for fs in f_s:
             with torch.no_grad():
-                sim = torch.cosine_similarity(fs, f_t, dim=0)
+                sim = (torch.cosine_similarity(fs, f_t, dim=0) + 1) / 2
             F_s += sim * fs / total_sim
         loss = torch.norm(f_t - F_s) ** 2
         return loss
