@@ -133,10 +133,10 @@ class Server:
                     vl.data -= p[i] * it[j]
             total_item_interact_table[total_item_interact_table == 0] = 1
             for grad in grads_embedding:
-                uid, u_emb, u_grad, total_items, total_grads = grad[0], grad[1], grad[2], grad[3], grad[4]
+                uid, u_emb_att, u_emb, total_items, total_grads = grad[0], grad[1], grad[2], grad[3], grad[4]
                 map_id = self.user_dic[uid][self.domain_name]
-                self.user_embedding_with_attention[map_id] = u_emb
-                self.U[map_id] -= u_grad
+                self.user_embedding_with_attention[map_id] = u_emb_att
+                self.U[map_id] = u_emb
                 self.V[total_items] -= total_grads / total_item_interact_table[total_items].unsqueeze(1)
 
 
