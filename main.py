@@ -18,7 +18,7 @@ parser.add_argument('--dataset', choices=['amazon', 'douban'], default='amazon')
 parser.add_argument('--round_gat', type=int, default=150)
 parser.add_argument('--round_ft', type=int, default=300)
 parser.add_argument('--num_domain', type=int, default=4)
-parser.add_argument('--device', type=str, default='cuda:3')
+parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--target_domain', type=int, default=1)
 parser.add_argument('--lr_mf', type=float, default=0.005)
 parser.add_argument('--lr_gat', type=float, default=0.001)
@@ -34,6 +34,7 @@ parser.add_argument('--eps', type=float, default=8)
 parser.add_argument('--dp', type=bool, default=True)
 parser.add_argument('--delta', type=float, default=1e-5)
 parser.add_argument('--num_users', type=int)
+parser.add_argument('--random_seed', type=int, default=42)
 parser.add_argument('--description', type=str, default=None)
 args = parser.parse_args()
 
@@ -67,6 +68,7 @@ output_file = 'output/' + str(args.num_domain) + '_' + args.model + '_dp_' + str
     args.target_domain) + '_' + str(
     args.random_seed) + '_' + formatted_date_time + '.out'
 
+os.makedirs('output', exist_ok=True)
 with open(output_file, 'w') as f:
     f.write(str(args)+'\n')
 print(args)
