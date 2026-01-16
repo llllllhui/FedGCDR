@@ -5,6 +5,7 @@ import torch
 import os
 import json
 import importlib
+
 import math
 import argparse
 import warnings
@@ -15,8 +16,8 @@ warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser(description='args for fedgcdr')
 parser.add_argument('--dataset', choices=['amazon', 'douban'], default='amazon')
-parser.add_argument('--round_gat', type=int, default=150)
-parser.add_argument('--round_ft', type=int, default=300)
+parser.add_argument('--round_gat', type=int, default=2)
+parser.add_argument('--round_ft', type=int, default=2)
 parser.add_argument('--num_domain', type=int, default=4)
 parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--target_domain', type=int, default=1)
@@ -68,7 +69,6 @@ output_file = 'output/' + str(args.num_domain) + '_' + args.model + '_dp_' + str
     args.target_domain) + '_' + str(
     args.random_seed) + '_' + formatted_date_time + '.out'
 
-os.makedirs('output', exist_ok=True)
 with open(output_file, 'w') as f:
     f.write(str(args)+'\n')
 print(args)
