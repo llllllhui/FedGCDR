@@ -9,7 +9,8 @@ def set_dataset(args):
                 dic = json.load(f)
                 f.close()
             domain_names = ['Clothing', 'Books', 'Movies', 'CDs']
-            args.num_users = 27596
+            # 使用实际生成的数据中的用户数量
+            args.num_users = len(dic['user_dic'])
         elif args.num_domain == 8:
             with open('data/8domains/domain_user.json', 'r') as f:
                 domain_user = json.load(f)
