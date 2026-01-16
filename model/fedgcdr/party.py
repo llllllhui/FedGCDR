@@ -16,19 +16,12 @@ class Server:
         self.clients = clients
         self.total_clients = total_clients
         self.num_items = num_m
-        # Use the actual number of users in this domain, not total clients
         self.num_users = len(clients)
         self.V = torch.randn(num_m, args.embedding_size, device=args.device)
         self.U = torch.randn(self.num_users, args.embedding_size, device=args.device)
         torch.nn.init.uniform(self.U, a=0., b=1.)
         torch.nn.init.uniform(self.V, a=0., b=1.)
-        # self.evaluate_data = torch.tensor(evaluate_data).to(args.device)
-        # 如果输入是字典，先将其转换为 [user, item] 的列表对，再转为 tensor
-        if isinstance(evaluate_data, dict):
-            # JSON 加载进来的 Key 是字符串，必须强转为 int
-            evaluate_data = [[int(u), int(i)] for u, i in evaluate_data.items()]
         self.evaluate_data = torch.tensor(evaluate_data).to(args.device)
-
         self.item_gat = GAT(args, args.embedding_size, args.embedding_size, args.embedding_size)
         self.domain_attention = torch.randn(1, args.num_domain, device=args.device)
         self.user_embedding_with_attention = torch.zeros_like(self.U)
@@ -36,8 +29,6 @@ class Server:
         self.lg10 = torch.Tensor([math.log(2) / math.log(i + 2) for i in range(10)]).to(args.device)
         self.lg5 = torch.Tensor([math.log(2) / math.log(i + 2) for i in range(5)]).to(args.device)
         self.user_dic = user_dic
-        # Create mapping from global user index to local index in this domain
-        self.user_dic_local = {global_idx: {self.domain_name: local_idx} for local_idx, global_idx in enumerate(clients)}
         self.args = args
         self.mlp = None
 
@@ -53,14 +44,14 @@ class Server:
             for it in batch_user:
                 if len(self.total_clients[it].train_data[self.id]) == 0:
                     continue
-                map_id = self.user_dic_local[it][self.domain_name]
+                map_id = self.user_dic[it][self.domain_name]
                 grad, items = self.total_clients[it].train(self.id, map_id, self.U, self.V)
                 grads.append(grad)
                 item_interact_table[items] += 1
             item_interact_table[item_interact_table == 0] = 1
             for it, vl in enumerate(grads):
                 u_grad, i_grad = vl[0], vl[1]
-                map_id = self.user_dic_local[batch_user[it]][self.domain_name]
+                map_id = self.user_dic[batch_user[it]][self.domain_name]
                 self.U[map_id] -= u_grad
                 self.V -= i_grad / item_interact_table.unsqueeze(1)
 
@@ -77,17 +68,8 @@ class Server:
     def test(self, U, V, epoch_id):
         test_data = self.evaluate_data
         with torch.no_grad():
-            all_predictions = []
-            for user, item in test_data:
-                user_local = self.user_dic_local[int(user)][self.domain_name]
-                # Sample 99 negative items
-                negative_items = torch.randint(0, self.num_items, (99,), device=U.device)
-                # Add the positive item at the end
-                all_items = torch.cat([negative_items, item.unsqueeze(0)])
-                # Get predictions for this user with all 100 items
-                user_predictions = sigmoid(torch.sum(torch.multiply(U[user_local], V[all_items]), dim=-1))
-                all_predictions.append(user_predictions)
-            test_predictions = torch.stack(all_predictions).flatten()
+            test_user, test_item = test_data[:, 0], test_data[:, 1]
+            test_predictions = sigmoid(torch.sum(torch.multiply(U[test_user], V[test_item]), dim=-1))
             hr_5, ndcg_5 = self.metric_at_k(test_predictions, 5, epoch_id)
             hr_10, ndcg_10 = self.metric_at_k(test_predictions, 10, epoch_id)
             return hr_5, ndcg_5, hr_10, ndcg_10
@@ -126,7 +108,7 @@ class Server:
                 if len(self.total_clients[it].train_data[self.id]) == 0:
                     continue
                 if tf_flag is False or i >= no_trans:
-                    pk, grad_gat, grad_emb, grad_kt = self.total_clients[it].train_gat(self.id, self.user_dic_local, self.item_gat, self.U, self.V)
+                    pk, grad_gat, grad_emb, grad_kt = self.total_clients[it].train_gat(self.id, self.user_dic, self.item_gat, self.U, self.V)
                 else:
                     pk, grad_gat, grad_emb, grad_kt = self.total_clients[it].knowledge_transfer(self.id, self.mlp, self.user_dic, self.item_gat, self.U, self.V, self.domain_attention)
                     grads_kt.append(grad_kt)
@@ -152,7 +134,7 @@ class Server:
             total_item_interact_table[total_item_interact_table == 0] = 1
             for grad in grads_embedding:
                 uid, u_emb_att, u_emb, total_items, total_grads = grad[0], grad[1], grad[2], grad[3], grad[4]
-                map_id = self.user_dic_local[uid][self.domain_name]
+                map_id = self.user_dic[uid][self.domain_name]
                 self.user_embedding_with_attention[map_id] = u_emb_att
                 self.U[map_id] = u_emb
                 self.V[total_items] -= total_grads / total_item_interact_table[total_items].unsqueeze(1)
@@ -284,5 +266,5 @@ class Client:
                 else:
                     transfer_vec.append(temp_vec)
 
-        return self.train_gat(domain_id, user_dic, item_gat, user_embedding, item_embedding, True, a, transfer_vec)
+        return self.train_gat(domain_id, user_dic, item_gat , user_embedding, item_embedding,True, a, transfer_vec)
 
