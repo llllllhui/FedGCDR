@@ -1,0 +1,4 @@
+Namespace(dataset='amazon', round_gat=1, round_ft=1, num_domain=4, device='cpu', target_domain=1, lr_mf=0.005, lr_gat=0.001, embedding_size=16, local_epoch=3, weight_decay=0.0001, num_negative=4, user_batch=16, model='fedgcdr', knowledge=False, only_ft=False, eps=8, dp=True, delta=1e-05, num_users=43989, random_seed=42, description=None)
+[Clothing GAT Round 0] hr_5 = 0.0762, ndcg_5 = 0.0487, hr_10 = 0.1193, ndcg_10 = 0.0626
+[Books GAT Round 0] hr_5 = 0.0937, ndcg_5 = 0.0605, hr_10 = 0.1475, ndcg_10 = 0.0777
+[Movies GAT Round 0] hr_5 = 0.1181, ndcg_5 = 0.0941, hr_10 = 0.1603, ndcg_10 = 0.1076
