@@ -1,15 +1,24 @@
 import torch.nn as nn
 import torch
 
+# GATLayer实现了图注意力网络(Graph Attention Network)的基本单元,
+# 用于学习图中节点之间的关系权重。
+
+# 单个图注意力层，使用可学习的注意力向量 A 计算节点间的注意力系数，并应用 softmax 激活函数
+# 来归一化注意力权重。前向传播方法接收输入特征和邻接矩阵，通过线性变换的组合计算注意力输出
 class GATLayer(nn.Module):
     def __init__(self, in_feature, out_feature, alpha):
         super().__init__()
+        #__`in_feature`__: 输入特征维度 (例如16)
         self.in_feature = in_feature
+        #__`out_feature`__: 输出特征维度 (例如16)
         self.out_feature = out_feature
+        # 注意力矩阵A,`A`的形状: `(2 * out_feature, 1)`
         self.A = nn.Parameter(torch.empty(size=(2 * out_feature, 1)))
         nn.init.xavier_uniform_(self.A.data, nn.init.calculate_gain('relu'))
         self.alpha = alpha
 
+    #向前传播
     def forward(self, input, adj):
         h = input
         h1 = torch.matmul(h, self.A[self.out_feature:, :])
@@ -74,7 +83,11 @@ class GAT(nn.Module):
         x = self.hidden2out(x, adj)
         return x, intermediate_embedding, ls, lm
 
-
+#核心功能: 知识向量转换
+#  __工作流程__
+# 1. __输入__: 从其他领域学到的知识向量 (维度16)
+# 2. __转换__: 通过MLP进行非线性变换
+# 3. __输出__: 适配目标域的知识向量 (维度仍为16)
 class MLP(nn.Module):
     def __init__(self, in_feature):
         super().__init__()

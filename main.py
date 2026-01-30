@@ -119,7 +119,7 @@ else:
         json.dump(k_dic, f)
 server[tar_domain].mlp = MLPs
 
-# ASYNC
+# ASYNC(目标域知识激活)
 if args.only_ft is False:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
     for i in range(args.round_gat):
