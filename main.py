@@ -11,6 +11,7 @@ import argparse
 import warnings
 import datetime
 import utility
+from model_saver import save_checkpoint, load_checkpoint, save_pretrained_embeddings, load_pretrained_embeddings
 
 warnings.filterwarnings('ignore')
 
@@ -37,6 +38,11 @@ parser.add_argument('--delta', type=float, default=1e-5)
 parser.add_argument('--num_users', type=int)
 parser.add_argument('--random_seed', type=int, default=42)
 parser.add_argument('--description', type=str, default=None)
+parser.add_argument('--save_checkpoint', type=bool, default=True, help='是否保存训练检查点')
+parser.add_argument('--checkpoint_path', type=str, default=None, help='加载检查点的路径')
+parser.add_argument('--save_pretrained', type=bool, default=True, help='是否保存预训练嵌入')
+parser.add_argument('--pretrained_path', type=str, default=None, help='加载预训练嵌入的路径')
+parser.add_argument('--skip_gat', type=bool, default=None, help='是否跳过GAT训练（加载检查点时自动设置为True）')
 args = parser.parse_args()
 
 Server = importlib.import_module('model.' + args.model + '.party').Server
@@ -59,6 +65,17 @@ MLPs = [MLP(args.embedding_size).to(device) for _ in range(args.num_domain)]
 for it in server:
     it.test_mf(0)
 
+# 加载检查点（如果指定了checkpoint_path）
+if args.checkpoint_path:
+    print(f'正在从检查点加载模型: {args.checkpoint_path}')
+    metadata = load_checkpoint(args.checkpoint_path, server, clients, MLPs, device)
+    print('检查点加载完成，跳过GAT训练阶段')
+    args.skip_gat = True  # 自动跳过GAT训练
+    args.only_ft = True  # 跳过ASYNC阶段，直接进入微调
+else:
+    print('未指定检查点，开始训练')
+    metadata = None
+    
 tar_domain = args.target_domain
 k_dic, emb_dic = {}, {}
 
@@ -74,12 +91,20 @@ with open(output_file, 'w') as f:
 print(args)
 
 # load knowledge
-if args.knowledge:
+if args.skip_gat:
+    print('已加载检查点，跳过知识训练阶段')
+    # 确保所有Client的mlp引用正确
+    for client in clients:
+        client.mlp = MLPs
+elif args.knowledge:
     with open('knowledge_hr/' + str(args.num_domain) + 'domains.json', 'r') as f:
         k_dic = json.load(f)
     for i in range(args.num_users):
         clients[i].knowledge = k_dic[str(i)]
 else:
+    # 确保所有Client的mlp引用正确
+    for client in clients:
+        client.mlp = MLPs
     order = [i for i in range(args.num_domain)]
     for it in order:
         max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
@@ -120,7 +145,9 @@ else:
 server[tar_domain].mlp = MLPs
 
 # ASYNC(目标域知识激活)
-if args.only_ft is False:
+if args.skip_gat:
+    print('已加载检查点，跳过ASYNC阶段')
+elif args.only_ft is False:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
     for i in range(args.round_gat):
         print(f'{server[tar_domain].domain_name} gat round {i}: ' + formatted_date_time)
@@ -193,3 +220,27 @@ with open(output_file, 'a') as f:
     f.write(f'hr_5 = {max_hr_5}, ndcg_5 = {max_ndcg_5}, hr_10 = {max_hr_10}, ndcg_10 = {max_ndcg_10}')
 print(epoch_id)
 print(f'hr_5 = {max_hr_5}, ndcg_5 = {max_ndcg_5}, hr_10 = {max_hr_10}, ndcg_10 = {max_ndcg_10}')
+
+# 保存检查点（如果启用）
+if args.save_checkpoint:
+    print('\n保存训练检查点...')
+    checkpoint_filename = f'fedgcdr_checkpoint_{formatted_date_time}.pt'
+    # 确定当前训练阶段
+    if args.checkpoint_path:
+        # 如果是从检查点加载的，则当前是微调阶段
+        training_stage = 'fine_tuning'
+    else:
+        # 如果是全新训练，则根据是否完成GAT训练判断
+        training_stage = 'fine_tuning'
+    checkpoint_path = save_checkpoint(server, clients, MLPs, save_dir='checkpoints', 
+                                    filename=checkpoint_filename, training_stage=training_stage)
+    print(f'检查点已保存到: {checkpoint_path}')
+
+# 保存预训练嵌入（如果启用）
+if args.save_pretrained:
+    print('\n保存预训练嵌入向量...')
+    pretrained_filename = f'pretrained_embeddings_{formatted_date_time}.pt'
+    pretrained_path = save_pretrained_embeddings(server, save_dir='embedding/pretrained', filename=pretrained_filename)
+    print(f'预训练嵌入已保存到: {pretrained_path}')
+
+print('\n训练完成！')
