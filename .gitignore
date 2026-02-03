@@ -1,0 +1,8 @@
+__pycache__/model_saver.cpython-313.pyc
+__pycache__/utility.cpython-313.pyc
+data/4domains/domain_user.json
+data/4domains/implicit.json
+model/__pycache__/__init__.cpython-313.pyc
+model/fedgcdr/__pycache__/__init__.cpython-313.pyc
+model/fedgcdr/__pycache__/model.cpython-313.pyc
+model/fedgcdr/__pycache__/party.cpython-313.pyc
