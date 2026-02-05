@@ -6,3 +6,5 @@ model/__pycache__/__init__.cpython-313.pyc
 model/fedgcdr/__pycache__/__init__.cpython-313.pyc
 model/fedgcdr/__pycache__/model.cpython-313.pyc
 model/fedgcdr/__pycache__/party.cpython-313.pyc
+FedGCDR_Intro_CN.ipynb
+GAT_forward_propagation_tutorial.ipynb
