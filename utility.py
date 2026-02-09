@@ -9,7 +9,6 @@ def set_dataset(args):
                 dic = json.load(f)
                 f.close()
             domain_names = ['Clothing', 'Books', 'Movies', 'CDs']
-            # 使用实际生成的数据中的用户数量
             args.num_users = len(dic['user_dic'])
         elif args.num_domain == 8:
             with open('data/8domains/domain_user.json', 'r') as f:
@@ -19,7 +18,7 @@ def set_dataset(args):
                 dic = json.load(f)
                 f.close()
             domain_names = ['Clothing', 'Books', 'Home', 'Electronics', 'Sports', 'Cell', 'Movies', 'CDs']
-            args.num_users = 98347
+            args.num_users = len(dic['user_dic'])
         else:
             with open('data/16domains/domain_user.json', 'r') as f:
                 domain_user = json.load(f)
@@ -29,10 +28,9 @@ def set_dataset(args):
                 f.close()
             domain_names = ['Clothing', 'Books', 'Home', 'Electronics', 'Sports', 'Cell', 'Tools', 'CDs', 'Movies', 'Toys',
                             'Automotive', 'Pet', 'Kindle', 'Office', 'Patio', 'Grocery']
-            args.num_users = 117672
+            args.num_users = len(dic['user_dic'])
 
     if args.dataset == 'douban':
-        args.num_users = 2666
         domain_names = ['Book', 'Movie', 'Music']
         upath = 'data/douban_oldver/domain_user.json'
         dpath = 'data/douban_oldver/implicit.json'
@@ -42,5 +40,6 @@ def set_dataset(args):
         with open(dpath, 'r') as f:
             dic = json.load(f)
             f.close()
+        args.num_users = len(dic['user_dic'])
 
     return domain_user, dic, domain_names

@@ -1,1 +1,0 @@
-Namespace(dataset='amazon', round_gat=150, round_ft=300, num_domain=4, device='cpu', target_domain=1, lr_mf=0.005, lr_gat=0.001, embedding_size=16, local_epoch=3, weight_decay=0.0001, num_negative=4, user_batch=16, model='fedgcdr', knowledge=False, only_ft=False, eps=8, dp=True, delta=1e-05, num_users=43989, random_seed=42, description=None)
