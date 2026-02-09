@@ -17,18 +17,21 @@ warnings.filterwarnings('ignore')
 parser = argparse.ArgumentParser(description='args for fedgcdr')
 parser.add_argument('--dataset', choices=['amazon', 'douban'], default='amazon')
 parser.add_argument('--round_gat', type=int, default=2)
-parser.add_argument('--round_ft', type=int, default=2)
+parser.add_argument('--round_ft', type=int, default=4)
 parser.add_argument('--num_domain', type=int, default=4)
 parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--target_domain', type=int, default=1)
 parser.add_argument('--lr_mf', type=float, default=0.005)
-parser.add_argument('--lr_gat', type=float, default=0.001)
+parser.add_argument('--lr_gat', type=float, default=0.01)
 parser.add_argument('--embedding_size', type=int, default=16)
 parser.add_argument('--local_epoch', type=int, default=3)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
 parser.add_argument('--num_negative', type=int, default=4)
 parser.add_argument('--user_batch', type=int, default=16)
 parser.add_argument('--model', type=str, default='fedgcdr')
+parser.add_argument('--gnn_type', type=str, default='gat', 
+                    choices=['gat', 'lightgcn'],
+                    help='选择使用的图神经网络模型: gat(原始GAT) 或 lightgcn(LightGCN)')
 parser.add_argument('--knowledge', type=bool, default=False)
 parser.add_argument('--only_ft', type=bool, default=False)
 parser.add_argument('--eps', type=float, default=8)
@@ -39,9 +42,17 @@ parser.add_argument('--random_seed', type=int, default=42)
 parser.add_argument('--description', type=str, default=None)
 args = parser.parse_args()
 
-Server = importlib.import_module('model.' + args.model + '.party').Server
-Client = importlib.import_module('model.' + args.model + '.party').Client
-MLP = importlib.import_module('model.' + args.model + '.model').MLP
+# 根据gnn_type参数选择对应的模块
+if args.gnn_type == 'lightgcn':
+    print(f'使用LightGCN模型')
+    Server = importlib.import_module('model.' + args.model + '.party_lightgcn').Server
+    Client = importlib.import_module('model.' + args.model + '.party_lightgcn').Client
+    MLP = importlib.import_module('model.' + args.model + '.lightgcn_model').MLP
+else:
+    print(f'使用原始GAT模型')
+    Server = importlib.import_module('model.' + args.model + '.party').Server
+    Client = importlib.import_module('model.' + args.model + '.party').Client
+    MLP = importlib.import_module('model.' + args.model + '.model').MLP
 
 
 device = torch.device(args.device)
@@ -56,6 +67,9 @@ server = [
 MLPs = [MLP(args.embedding_size).to(device) for _ in range(args.num_domain)]
 
 # eval pre-train model
+print(f'\n{"="*60}')
+print(f'开始训练: 模型类型={args.gnn_type}, 目标域={domain_names[args.target_domain]}')
+print(f'{"="*60}\n')
 for it in server:
     it.test_mf(0)
 
@@ -122,14 +136,19 @@ server[tar_domain].mlp = MLPs
 # ASYNC(目标域知识激活)
 if args.only_ft is False:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
+    training_success = False
     for i in range(args.round_gat):
         print(f'{server[tar_domain].domain_name} gat round {i}: ' + formatted_date_time)
 
         try:
             server[tar_domain].kt_stage(True)
-        except:
-            continue
-        hr_5, ndcg_5, hr_10, ndcg_10 = server[tar_domain].test_gat(i)
+            hr_5, ndcg_5, hr_10, ndcg_10 = server[tar_domain].test_gat(i)
+            training_success = True
+        except Exception as e:
+            print(f'知识转移阶段发生错误: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            break
         with open(output_file, 'a') as f:
             f.write(
                 f'[{server[tar_domain].domain_name} GAT Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
@@ -149,8 +168,15 @@ if args.only_ft is False:
         # if no_improve > 100:
         #     break
 
-    server[tar_domain].U = torch.tensor(emb_dic[domain_names[tar_domain]][0], device=args.device)
-    server[tar_domain].V = torch.tensor(emb_dic[domain_names[tar_domain]][1], device=args.device)
+    # 保存最佳嵌入，如果没有则使用当前嵌入
+    if domain_names[tar_domain] in emb_dic:
+        server[tar_domain].U = torch.tensor(emb_dic[domain_names[tar_domain]][0], device=args.device)
+        server[tar_domain].V = torch.tensor(emb_dic[domain_names[tar_domain]][1], device=args.device)
+        print(f'成功加载{domain_names[tar_domain]}的嵌入')
+    else:
+        print(f'警告: 没有找到{domain_names[tar_domain]}的嵌入，使用当前嵌入')
+        emb_dic[domain_names[tar_domain]] = [server[tar_domain].U.data.tolist(),
+                                             server[tar_domain].V.data.tolist()]
     emb_dic['parser'] = vars(args)
     with open('embedding/' + args.model + '/' + str(args.num_domain) + 'dp' + str(args.dp) + '_' + args.dataset + '_' + domain_names[
         tar_domain] + '_' + args.model + '.json', 'w') as f:

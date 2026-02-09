@@ -1,4 +1,9 @@
-FedGCDR_Intro_CN.ipynb
-GAT_forward_propagation_tutorial.ipynb
 data/4domains/domain_user.json
 data/4domains/implicit.json
+model/__pycache__/
+model/fedgcdr/__pycache__
+output/
+*.ipynb
+*.sh
+*.txt
+__pycache__/
