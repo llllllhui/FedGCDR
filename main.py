@@ -16,20 +16,21 @@ warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser(description='args for fedgcdr')
 parser.add_argument('--dataset', choices=['amazon', 'douban'], default='amazon')
-parser.add_argument('--round_gat', type=int, default=2)
-parser.add_argument('--round_ft', type=int, default=4)
+parser.add_argument('--round_gat', type=int, default=20)
+parser.add_argument('--round_ft', type=int, default=40)
 parser.add_argument('--num_domain', type=int, default=4)
 parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--target_domain', type=int, default=1)
 parser.add_argument('--lr_mf', type=float, default=0.005)
-parser.add_argument('--lr_gat', type=float, default=0.01)
+parser.add_argument('--lr_gat', type=float, default=0.001)
+parser.add_argument('--lr_lightgcn', type=float, default=0.01)
 parser.add_argument('--embedding_size', type=int, default=16)
 parser.add_argument('--local_epoch', type=int, default=3)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
 parser.add_argument('--num_negative', type=int, default=4)
 parser.add_argument('--user_batch', type=int, default=16)
 parser.add_argument('--model', type=str, default='fedgcdr')
-parser.add_argument('--gnn_type', type=str, default='gat', 
+parser.add_argument('--gnn_type', type=str, default='lightgcn', 
                     choices=['gat', 'lightgcn'],
                     help='选择使用的图神经网络模型: gat(原始GAT) 或 lightgcn(LightGCN)')
 parser.add_argument('--knowledge', type=bool, default=False)
@@ -99,15 +100,20 @@ else:
         max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
         knowledge = [1] * args.num_users
         for i in range(args.round_gat):
-            print(f'{server[it].domain_name} gat round {i}: ' + formatted_date_time)
-            server[it].kt_stage()
+            model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
+            print(f'{server[it].domain_name} {model_name} round {i}: ' + formatted_date_time)
+            if args.gnn_type == 'lightgcn':
+                server[it].kt_stage(round_id=i)
+            else:
+                server[it].kt_stage()
             hr_5, ndcg_5, hr_10, ndcg_10 = server[it].test_gat(i)
+            model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
             with open(output_file, 'a') as f:
                 f.write(
-                    f'[{server[it].domain_name} GAT Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
+                    f'[{server[it].domain_name} {model_name} Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
                     f' ndcg_10 = {ndcg_10:.4f}\n')
             print(
-                f'[{server[it].domain_name} GAT Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
+                f'[{server[it].domain_name} {model_name} Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
                 f' ndcg_10 = {ndcg_10:.4f}\n')
             if hr_10 > max_hr or (hr_10 == max_hr and ndcg_10 > max_ndcg):
                 no_improve = 0
@@ -138,10 +144,14 @@ if args.only_ft is False:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
     training_success = False
     for i in range(args.round_gat):
-        print(f'{server[tar_domain].domain_name} gat round {i}: ' + formatted_date_time)
+        model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
+        print(f'{server[tar_domain].domain_name} {model_name} round {i}: ' + formatted_date_time)
 
         try:
-            server[tar_domain].kt_stage(True)
+            if args.gnn_type == 'lightgcn':
+                server[tar_domain].kt_stage(True, i)
+            else:
+                server[tar_domain].kt_stage(True)
             hr_5, ndcg_5, hr_10, ndcg_10 = server[tar_domain].test_gat(i)
             training_success = True
         except Exception as e:
@@ -151,10 +161,10 @@ if args.only_ft is False:
             break
         with open(output_file, 'a') as f:
             f.write(
-                f'[{server[tar_domain].domain_name} GAT Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
+                f'[{server[tar_domain].domain_name} {model_name} Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
                 f' ndcg_10 = {ndcg_10:.4f}\n')
         print(
-            f'[{server[tar_domain].domain_name} GAT Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
+            f'[{server[tar_domain].domain_name} {model_name} Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
             f' ndcg_10 = {ndcg_10:.4f}\n')
         if hr_10 > max_hr or (hr_10 == max_hr and ndcg_10 > max_ndcg):
             no_improve = 0

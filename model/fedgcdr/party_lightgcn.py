@@ -22,8 +22,8 @@ class Server:
         torch.nn.init.uniform(self.U, a=0., b=1.)
         torch.nn.init.uniform(self.V, a=0., b=1.)
         self.evaluate_data = torch.tensor(evaluate_data).to(args.device)
-        # 使用LightGCN替换GAT
-        self.item_lightgcn = LightGCN(args, args.embedding_size, args.embedding_size, args.embedding_size, num_layers=2)
+        # 使用LightGCN替换GAT，减少层数防止过平滑
+        self.item_lightgcn = LightGCN(args, args.embedding_size, args.embedding_size, args.embedding_size, num_layers=1, dropout=0.1)
         self.domain_attention = torch.randn(1, args.num_domain, device=args.device)
         self.user_embedding_with_attention = torch.zeros_like(self.U)
         self.item_embedding_with_attention = torch.zeros_like(self.V)
@@ -32,6 +32,12 @@ class Server:
         self.user_dic = user_dic
         self.args = args
         self.mlp = None
+        
+        # 早停机制变量
+        self.best_hr = 0.0
+        self.patience = 5
+        self.early_stop_counter = 0
+        self.best_model_state = None
 
     def mf_train(self):
         batch_num = math.ceil(self.num_users / self.args.user_batch)
@@ -95,10 +101,15 @@ class Server:
                 for i, vl in enumerate(self.mlp[d].parameters()):
                     vl.data -= p * gd[i]
 
-    def kt_stage(self, tf_flag=False):
+    def kt_stage(self, tf_flag=False, round_id=0):
         batch_num = math.ceil(self.num_users / self.args.user_batch)
         ids = copy.deepcopy(self.clients)
         np.random.shuffle(ids)
+        
+        # 学习率衰减：每轮衰减5%
+        lr_decay = 0.95 ** round_id
+        current_lr_gat = self.args.lr_lightgcn * lr_decay
+        current_lr_mf = self.args.lr_mf * lr_decay
         
         for bt in tqdm(range(batch_num)):
             grads_model, p, grads_embedding, grads_kt = [], [], [], []
@@ -113,10 +124,10 @@ class Server:
                 
                 if tf_flag is False or i >= no_trans:
                     pk, grad_lightgcn, grad_emb, grad_kt = self.total_clients[it].train_lightgcn(
-                        self.id, self.user_dic, self.item_lightgcn, self.U, self.V)
+                        self.id, self.user_dic, self.item_lightgcn, self.U, self.V, lr_gat=current_lr_gat, lr_mf=current_lr_mf)
                 else:
                     pk, grad_lightgcn, grad_emb, grad_kt = self.total_clients[it].knowledge_transfer_lightgcn(
-                        self.id, self.mlp, self.user_dic, self.item_lightgcn, self.U, self.V, self.domain_attention)
+                        self.id, self.mlp, self.user_dic, self.item_lightgcn, self.U, self.V, self.domain_attention, lr_gat=current_lr_gat, lr_mf=current_lr_mf)
                     grads_kt.append(grad_kt)
                 total_items = grad_emb[3]
                 total_item_interact_table[total_items] += 1
@@ -191,8 +202,13 @@ class Client:
         grads = [user_embedding[map_id].detach() - user_emb.detach(), item_embedding.detach() - item_emb.detach()]
         return grads, domain_items
 
-    def train_lightgcn(self, domain_id, user_dic, model_item, global_user_embedding, global_item_embedding, transfer=False, a=None ,transfer_vec=None):
+    def train_lightgcn(self, domain_id, user_dic, model_item, global_user_embedding, global_item_embedding, transfer=False, a=None ,transfer_vec=None, lr_gat=None, lr_mf=None):
 
+        if lr_gat is None:
+            lr_gat = self.args.lr_lightgcn
+        if lr_mf is None:
+            lr_mf = self.args.lr_mf
+            
         grads_lightgcn, grad_emb, grad_kt, temp_vec = [], [], [], [0 for _ in range(self.args.num_domain)]
         length = len(self.items[domain_id])
         self.lightgcn = copy.deepcopy(model_item)
@@ -200,16 +216,17 @@ class Client:
         item_embedding = self.reset(global_item_embedding)
         paras = [user_embedding, item_embedding] + [para for para in self.lightgcn.parameters()]
         local_a = a
+        mlps = None
         if transfer:
             mlps = copy.deepcopy(self.mlp)
             for mlp in mlps:
                 paras += [para for para in mlp.parameters()]
             local_a = self.reset(a)
-        optimizer = torch.optim.Adam(paras, lr=self.args.lr_gat)
+        optimizer = torch.optim.Adam(paras, lr=lr_gat)
         total_item, ratings = self.sample_negative(self.train_data[domain_id], self.num_items[domain_id])
         for epoch in range(self.args.local_epoch):
             optimizer.zero_grad()
-            if transfer:
+            if transfer and mlps is not None:
                 for i in range(self.args.num_domain):
                     temp_vec[i] = mlps[i](transfer_vec[i])
             h_i, intermediate_emb, ls, lm = self.lightgcn(
@@ -254,7 +271,7 @@ class Client:
         else:
             return x
 
-    def knowledge_transfer_lightgcn(self, domain_id, mlps, user_dic, item_lightgcn, user_embedding, item_embedding, a):
+    def knowledge_transfer_lightgcn(self, domain_id, mlps, user_dic, item_lightgcn, user_embedding, item_embedding, a, lr_gat=None, lr_mf=None):
         transfer_vec = []
         self.mlp = mlps
         std = self.sensitivity * torch.sqrt(2 * torch.log(1.25 / self.delta)) * 1 / self.args.eps
@@ -272,4 +289,4 @@ class Client:
                 else:
                     transfer_vec.append(temp_vec)
 
-        return self.train_lightgcn(domain_id, user_dic, item_lightgcn , user_embedding, item_embedding,True, a, transfer_vec)
+        return self.train_lightgcn(domain_id, user_dic, item_lightgcn , user_embedding, item_embedding,True, a, transfer_vec, lr_gat, lr_mf)

@@ -27,7 +27,7 @@ class LightGCNLayer(nn.Module):
 
 
 class LightGCN(nn.Module):
-    def __init__(self, args, in_feature, hid_feature=16, out_feature=16, num_layers=2, dropout=0):
+    def __init__(self, args, in_feature, hid_feature=16, out_feature=16, num_layers=1, dropout=0.1):
         super().__init__()
         self.in_feature = in_feature
         self.hid_feature = hid_feature
@@ -37,6 +37,9 @@ class LightGCN(nn.Module):
         
         # LightGCN使用多个层，每层都是简单的邻接聚合
         self.layers = nn.ModuleList([LightGCNLayer() for _ in range(num_layers)])
+        
+        # 残差连接投影层
+        self.res_proj = nn.Linear(hid_feature, hid_feature) if num_layers > 1 else None
 
     @staticmethod
     def compute_ls(f_t, f_s):
@@ -94,9 +97,18 @@ class LightGCN(nn.Module):
             # 非转移阶段：包含原始输入
             layer_outputs.append(x)
         
-        # LightGCN的逐层传播
+        # LightGCN的逐层传播，添加层归一化和残差连接
         for i, layer in enumerate(self.layers):
-            x = layer(x, adj)
+            x_new = layer(x, adj)
+            # 动态创建LayerNorm在正确的设备上
+            ln = nn.LayerNorm(self.hid_feature, device=x.device)
+            x_new = ln(x_new)
+            # 添加dropout
+            x_new = self.drop(x_new)
+            # 残差连接（如果有多个层）
+            if self.res_proj is not None and i > 0:
+                x_new = x_new + self.res_proj(x)
+            x = x_new
             layer_outputs.append(x)
         
         # LightGCN使用所有层的平均作为最终表示
