@@ -106,8 +106,11 @@ class Server:
         ids = copy.deepcopy(self.clients)
         np.random.shuffle(ids)
         
-        # 学习率衰减：每轮衰减5%
-        lr_decay = 0.95 ** round_id
+        # 学习率衰减策略：采用余弦衰减
+        # 这种策略在训练初期保持较高学习率，后期平滑降低
+        total_rounds = self.args.round_gat
+        lr_decay = 0.5 * (1 + math.cos(math.pi * round_id / total_rounds))
+        
         current_lr_gat = self.args.lr_lightgcn * lr_decay
         current_lr_mf = self.args.lr_mf * lr_decay
         
