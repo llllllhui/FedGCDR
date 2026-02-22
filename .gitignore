@@ -7,3 +7,4 @@ output/
 *.sh
 *.txt
 __pycache__/
+.claude/settings.local.json

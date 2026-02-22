@@ -105,14 +105,20 @@ class Server:
         batch_num = math.ceil(self.num_users / self.args.user_batch)
         ids = copy.deepcopy(self.clients)
         np.random.shuffle(ids)
-        
+
         # 学习率衰减策略：采用余弦衰减
-        # 这种策略在训练初期保持较高学习率，后期平滑降低
-        total_rounds = self.args.round_gat
-        lr_decay = 0.5 * (1 + math.cos(math.pi * round_id / total_rounds))
-        
-        current_lr_gat = self.args.lr_lightgcn * lr_decay
-        current_lr_mf = self.args.lr_mf * lr_decay
+        # 知识获取阶段（tf_flag=False）：使用余弦衰减，训练初期保持较高学习率，后期平滑降低
+        # 知识转移阶段（tf_flag=True）：使用固定学习率，避免学习率衰减导致无法有效学习转移的知识
+        if tf_flag:
+            # 知识转移阶段：使用固定学习率，确保模型能够有效学习和整合跨域知识
+            current_lr_gat = self.args.lr_lightgcn
+            current_lr_mf = self.args.lr_mf
+        else:
+            # 知识获取阶段：使用余弦衰减
+            total_rounds = self.args.round_gat
+            lr_decay = 0.5 * (1 + math.cos(math.pi * round_id / total_rounds))
+            current_lr_gat = self.args.lr_lightgcn * lr_decay
+            current_lr_mf = self.args.lr_mf * lr_decay
         
         for bt in tqdm(range(batch_num)):
             grads_model, p, grads_embedding, grads_kt = [], [], [], []
