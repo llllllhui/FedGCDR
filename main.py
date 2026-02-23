@@ -5,21 +5,40 @@ import torch
 import os
 import json
 import importlib
+import subprocess
 
 import math
 import argparse
 import warnings
 import datetime
 import utility
+from checkpoint import CheckpointManager, restore_from_checkpoint, restore_target_domain
+
+
+def get_git_commit_hash():
+    """获取当前git commit hash"""
+    try:
+        # 获取短版本hash（前7位）
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return 'unknown'
+    except Exception:
+        return 'unknown'
 
 warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser(description='args for fedgcdr')
 parser.add_argument('--dataset', choices=['amazon', 'douban'], default='amazon')
-parser.add_argument('--round_gat', type=int, default=20)
-parser.add_argument('--round_ft', type=int, default=40)
+parser.add_argument('--round_gat', type=int, default=30)
+parser.add_argument('--round_ft', type=int, default=60)
 parser.add_argument('--num_domain', type=int, default=4)
-parser.add_argument('--device', type=str, default='cpu')
+parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--target_domain', type=int, default=1)
 parser.add_argument('--lr_mf', type=float, default=0.005)
 parser.add_argument('--lr_gat', type=float, default=0.001)
@@ -41,7 +60,34 @@ parser.add_argument('--delta', type=float, default=1e-5)
 parser.add_argument('--num_users', type=int)
 parser.add_argument('--random_seed', type=int, default=42)
 parser.add_argument('--description', type=str, default=None)
+# Checkpoint相关参数
+parser.add_argument('--resume_from', type=str, choices=['kg', 'kt', None], default=None,
+                    help='从checkpoint恢复训练: kg=知识获取阶段后, kt=知识转移阶段后')
+parser.add_argument('--checkpoint_path', type=str, default=None,
+                    help='checkpoint文件路径(用于resume_from)')
+parser.add_argument('--save_checkpoint', action='store_true', default=True,
+                    help='是否保存checkpoint(默认保存)')
+parser.add_argument('--list_checkpoints', action='store_true',
+                    help='列出所有可用的checkpoint')
+parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
+                    help='checkpoint保存目录')
 args = parser.parse_args()
+
+# 初始化Checkpoint管理器
+checkpoint_manager = CheckpointManager(checkpoint_dir=args.checkpoint_dir, max_keep=3)
+
+# 列出checkpoint
+if args.list_checkpoints:
+    checkpoint_manager.print_checkpoints()
+    exit(0)
+
+# 检查恢复训练参数
+if args.resume_from and not args.checkpoint_path:
+    # 如果指定了resume_from但没有指定路径，列出可用的checkpoint
+    print(f"错误: 使用--resume_from时必须指定--checkpoint_path")
+    print(f"\n可用的checkpoint:")
+    checkpoint_manager.print_checkpoints()
+    exit(1)
 
 # 根据gnn_type参数选择对应的模块
 if args.gnn_type == 'lightgcn':
@@ -77,6 +123,10 @@ for it in server:
 tar_domain = args.target_domain
 k_dic, emb_dic = {}, {}
 
+# 根据checkpoint恢复情况设置跳过标志
+skip_kg_training = args.resume_from in ['kg', 'kt']  # 跳过知识获取阶段
+skip_kt_training = args.resume_from == 'kt'  # 跳过知识转移阶段
+
 now = datetime.datetime.now()
 formatted_date_time = now.strftime("%Y-%m-%d %H:%M:%S").replace(' ', '_').replace(':', "_")
 formatted_date = now.strftime("%Y-%m-%d")
@@ -84,17 +134,81 @@ output_file = 'output/' + str(args.num_domain) + '_' + args.model + '_dp_' + str
     args.target_domain) + '_' + str(
     args.random_seed) + '_' + formatted_date_time + '.out'
 
+# 获取git版本信息
+git_commit_hash = get_git_commit_hash()
+
 with open(output_file, 'w') as f:
-    f.write(str(args)+'\n')
+    f.write(str(args) + f'\nGit Commit: {git_commit_hash}\n')
 print(args)
+print(f'Git Commit: {git_commit_hash}')
 
 # load knowledge
-if args.knowledge:
+if args.resume_from == 'kg':
+    # 从知识获取阶段checkpoint恢复，跳过知识获取阶段
+    print(f"\n{'='*60}")
+    print(f"从知识获取阶段Checkpoint恢复训练")
+    print(f"Checkpoint: {args.checkpoint_path}")
+    print(f"{'='*60}")
+
+    # 加载checkpoint
+    metadata, model_states, knowledge = checkpoint_manager.load_checkpoint(
+        args.checkpoint_path, device
+    )
+
+    # 验证参数兼容性
+    is_valid, message = checkpoint_manager.validate_checkpoint(metadata, args)
+    if not is_valid:
+        print(f"错误: {message}")
+        exit(1)
+
+    # 恢复模型状态
+    restore_from_checkpoint(server, clients, model_states, knowledge, device, args)
+
+    # 初始化目标域的MLP（知识转移阶段需要）
+    server[tar_domain].mlp = MLPs
+
+    print(f"✓ 已跳过知识获取阶段，直接进入知识转移阶段\n")
+
+elif args.resume_from == 'kt':
+    skip_kg_training = True
+    skip_kt_training = True
+    # 从知识转移阶段checkpoint恢复，跳过知识获取和转移阶段
+    # 从知识转移阶段checkpoint恢复，跳过知识获取和转移阶段
+    print(f"\n{'='*60}")
+    print(f"从知识转移阶段Checkpoint恢复训练")
+    print(f"Checkpoint: {args.checkpoint_path}")
+    print(f"{'='*60}")
+
+    # 加载checkpoint
+    metadata, model_states, knowledge, target_state, mlp_states = checkpoint_manager.load_checkpoint(
+        args.checkpoint_path, device
+    )
+
+    # 验证参数兼容性
+    is_valid, message = checkpoint_manager.validate_checkpoint(metadata, args)
+    if not is_valid:
+        print(f"错误: {message}")
+        exit(1)
+
+    # 恢复模型状态
+    restore_from_checkpoint(server, clients, model_states, knowledge, device, args)
+
+    # 恢复目标域状态
+    server[tar_domain].mlp = MLPs
+    restore_target_domain(server[tar_domain], MLPs, target_state, mlp_states, device)
+
+    print(f"✓ 已跳过知识获取和转移阶段，直接进入微调阶段\n")
+
+elif args.knowledge:
+    skip_kg_training = False
+    skip_kt_training = False
     with open('knowledge_hr/' + str(args.num_domain) + 'domains.json', 'r') as f:
         k_dic = json.load(f)
     for i in range(args.num_users):
         clients[i].knowledge = k_dic[str(i)]
 else:
+    skip_kg_training = False
+    skip_kt_training = False
     order = [i for i in range(args.num_domain)]
     for it in order:
         max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
@@ -137,10 +251,20 @@ else:
         k_dic[i] = clients[i].knowledge
     with open('knowledge_64/' + str(args.num_domain) + 'domains' + '_' + formatted_date + '.json', 'w') as f:
         json.dump(k_dic, f)
-server[tar_domain].mlp = MLPs
+    server[tar_domain].mlp = MLPs
+
+    # 保存知识获取阶段checkpoint
+    if args.save_checkpoint and not args.resume_from:
+        kg_metrics = {
+            'max_hr': float(max_hr) if isinstance(max_hr, (int, float)) else 0.0,
+            'max_ndcg': float(max_ndcg) if isinstance(max_ndcg, (int, float)) else 0.0,
+            'best_epoch': int(epoch_id) if isinstance(epoch_id, (int, float)) else 0,
+        }
+        checkpoint_path = checkpoint_manager.save_kg_checkpoint(server, clients, args, kg_metrics)
+        print(f"✓ 知识获取阶段Checkpoint已保存\n")
 
 # ASYNC(目标域知识激活)
-if args.only_ft is False:
+if args.only_ft is False and not skip_kt_training:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
     training_success = False
     for i in range(args.round_gat):
@@ -192,8 +316,18 @@ if args.only_ft is False:
         tar_domain] + '_' + args.model + '.json', 'w') as f:
         json.dump(emb_dic, f)
 
-# load embedding
-else:
+    # 保存知识转移阶段checkpoint
+    if args.save_checkpoint and not args.resume_from:
+        kt_metrics = {
+            'max_hr': float(max_hr) if isinstance(max_hr, (int, float)) else 0.0,
+            'max_ndcg': float(max_ndcg) if isinstance(max_ndcg, (int, float)) else 0.0,
+            'best_epoch': int(epoch_id) if isinstance(epoch_id, (int, float)) else 0,
+        }
+        checkpoint_path = checkpoint_manager.save_kt_checkpoint(server, clients, tar_domain, MLPs, args, kt_metrics)
+        print(f"✓ 知识转移阶段Checkpoint已保存\n")
+
+# 加载目标域嵌入（仅在跳过知识转移训练或仅进行微调时）
+if args.only_ft or skip_kt_training:
     with open('embedding/' + args.model + '/' + str(args.num_domain) + 'dp' + str(args.dp) + '_' + args.dataset + '_' +
               domain_names[tar_domain] + '_' + args.model + '.json', 'r') as f:
         dic = json.load(f)
