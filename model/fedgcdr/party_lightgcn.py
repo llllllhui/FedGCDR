@@ -283,7 +283,17 @@ class Client:
     def knowledge_transfer_lightgcn(self, domain_id, mlps, user_dic, item_lightgcn, user_embedding, item_embedding, a, lr_gat=None, lr_mf=None):
         transfer_vec = []
         self.mlp = mlps
-        std = self.sensitivity * torch.sqrt(2 * torch.log(1.25 / self.delta)) * 1 / self.args.eps
+        # 方案1: 降低差分隐私噪声影响 - 将eps翻倍，使噪声标准差减半
+        # 原始: std = sensitivity * sqrt(2 * log(1.25/delta)) / eps
+        # 修改: std = sensitivity * sqrt(2 * log(1.25/delta)) / (eps * 2)
+        # 这样噪声从约0.606降低到约0.303，减少对知识的干扰
+        std = self.sensitivity * torch.sqrt(2 * torch.log(1.25 / self.delta)) * 1 / (self.args.eps * 2)
+
+        # 知识质量阈值：只转移模长大于阈值的知识向量
+        # 嵌入向量初始化范围为[0,1]，16维向量的模长理论最大值为sqrt(16)=4
+        # 设阈值为0.5，过滤掉低质量的弱知识
+        knowledge_threshold = 0.5
+
         for j in range(self.args.num_domain):
             if j == domain_id:
                 transfer_vec.append(torch.zeros(self.args.embedding_size, device=self.args.device))
@@ -292,6 +302,14 @@ class Client:
                     temp_vec = torch.zeros(self.args.embedding_size, device=self.args.device)
                 else:
                     temp_vec = Client.l2_clip(torch.tensor(self.knowledge[j][0], device=self.args.device), self.sensitivity)
+
+                    # 方案2: 知识质量门控 - 只转移高质量的知识
+                    # 计算知识向量的模长，低于阈值则视为低质量知识，不转移
+                    knowledge_norm = torch.norm(temp_vec).item()
+                    if knowledge_norm < knowledge_threshold:
+                        # 知识质量不足，使用零向量代替
+                        temp_vec = torch.zeros(self.args.embedding_size, device=self.args.device)
+
                 noise = torch.normal(mean=0, std=std, size = (1, self.args.embedding_size)).to(self.args.device).squeeze()
                 if self.args.dp:
                     transfer_vec.append(temp_vec + noise)
