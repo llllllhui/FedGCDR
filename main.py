@@ -73,6 +73,16 @@ parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
                     help='checkpoint保存目录')
 args = parser.parse_args()
 
+# 设置随机种子，确保可复现性
+random.seed(args.random_seed)
+np.random.seed(args.random_seed)
+torch.manual_seed(args.random_seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(args.random_seed)
+    torch.cuda.manual_seed_all(args.random_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 # 初始化Checkpoint管理器
 checkpoint_manager = CheckpointManager(checkpoint_dir=args.checkpoint_dir, max_keep=3)
 
@@ -326,14 +336,18 @@ if args.only_ft is False and not skip_kt_training:
         checkpoint_path = checkpoint_manager.save_kt_checkpoint(server, clients, tar_domain, MLPs, args, kt_metrics)
         print(f"✓ 知识转移阶段Checkpoint已保存\n")
 
-# 加载目标域嵌入（仅在跳过知识转移训练或仅进行微调时）
-if args.only_ft or skip_kt_training:
-    with open('embedding/' + args.model + '/' + str(args.num_domain) + 'dp' + str(args.dp) + '_' + args.dataset + '_' +
-              domain_names[tar_domain] + '_' + args.model + '.json', 'r') as f:
+# 加载目标域嵌入（仅在仅微调模式时，且不是从kt checkpoint恢复时）
+# 注意：从kt checkpoint恢复时，嵌入已经从checkpoint中恢复，无需再从json加载
+if args.only_ft and not args.resume_from:
+    embedding_file = 'embedding/' + args.model + '/' + str(args.num_domain) + 'dp' + str(args.dp) + '_' + args.dataset + '_' + \
+              domain_names[tar_domain] + '_' + args.model + '.json'
+    print(f'从文件加载目标域嵌入: {embedding_file}')
+    with open(embedding_file, 'r') as f:
         dic = json.load(f)
         tar_name = domain_names[args.target_domain]
         server[tar_domain].U.data, server[tar_domain].V.data = torch.tensor(dic[tar_name][0], device=args.device), \
             torch.tensor(dic[tar_name][1], device=args.device)
+    print(f'✓ 目标域嵌入加载完成\n')
 
 max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
 max_hr_5, max_hr_10, max_ndcg_5, max_ndcg_10 = 0, 0, 0, 0
