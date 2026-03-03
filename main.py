@@ -242,7 +242,7 @@ else:
                 server[it].kt_stage(round_id=i)
             else:
                 server[it].kt_stage()
-            hr_5, ndcg_5, hr_10, ndcg_10 = server[it].test_gat(i)
+            hr_5, ndcg_5, hr_10, ndcg_10 = server[it].test_gnn(i)
             model_name = get_model_display_name(args.gnn_type)
             with open(output_file, 'a') as f:
                 f.write(
@@ -298,7 +298,7 @@ if args.only_ft is False and not skip_kt_training:
                 server[tar_domain].kt_stage(True, i)
             else:
                 server[tar_domain].kt_stage(True)
-            hr_5, ndcg_5, hr_10, ndcg_10 = server[tar_domain].test_gat(i)
+            hr_5, ndcg_5, hr_10, ndcg_10 = server[tar_domain].test_gnn(i)
             training_success = True
         except Exception as e:
             print(f'知识转移阶段发生错误: {str(e)}')
