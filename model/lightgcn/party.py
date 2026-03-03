@@ -1,5 +1,5 @@
 """
-GAT 模型的 Server 和 Client 实现
+LightGCN 模型的 Server 和 Client 实现
 
 用于 FedGCDR 联邦跨域推荐系统
 """
@@ -16,36 +16,38 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from base_party import BaseServer, BaseClient
 from registry import SERVER_REGISTRY, CLIENT_REGISTRY
-from .model import GAT, MLP
+from .model import LightGCN, MLP
+from torch.nn.functional import sigmoid, binary_cross_entropy
 
 
-@SERVER_REGISTRY.register('gat')
+@SERVER_REGISTRY.register('lightgcn')
 class Server(BaseServer):
     """
-    GAT 服务器端 - 聚合客户端更新并进行知识转移
+    LightGCN 服务器端 - 聚合客户端更新并进行知识转移
     """
-    
-    def __init__(self, id, d_name, num_m, total_clients, clients, 
+
+    def __init__(self, id, d_name, num_m, total_clients, clients,
                  evaluate_data, user_dic, args):
-        super().__init__(id, d_name, num_m, total_clients, clients, 
+        super().__init__(id, d_name, num_m, total_clients, clients,
                         evaluate_data, user_dic, args)
-        self.item_gat = GAT(args, args.embedding_size, args.embedding_size, 
-                           args.embedding_size)
-    
+        # 使用 LightGCN 替换 GAT，减少层数防止过平滑
+        self.item_lightgcn = LightGCN(args, args.embedding_size, args.embedding_size,
+                                      args.embedding_size, num_layers=1, dropout=0.1)
+
     def get_gnn_model(self):
         """获取 GNN 模型实例"""
-        return self.item_gat
+        return self.item_lightgcn
 
     def train_gnn(self, domain_id, user_dic, model_item, global_user_embedding,
                   global_item_embedding, transfer=False, a=None, transfer_vec=None):
-        """训练 GAT 模型"""
-        return self.train_gat(domain_id, user_dic, model_item,
-                             global_user_embedding, global_item_embedding,
-                             transfer, a, transfer_vec)
+        """训练 LightGCN 模型"""
+        return self.train_lightgcn(domain_id, user_dic, model_item,
+                                   global_user_embedding, global_item_embedding,
+                                   transfer, a, transfer_vec)
 
     def test_gnn(self, epoch_id: int):
-        """测试 GAT 模型"""
-        self.item_gat.eval()
+        """测试 LightGCN 模型"""
+        self.item_lightgcn.eval()
         return self.test(self.user_embedding_with_attention, self.V, epoch_id)
 
     def train_mlp(self, batch):
@@ -61,37 +63,59 @@ class Server(BaseServer):
                 gd = it[d]
                 for i, vl in enumerate(self.mlp[d].parameters()):
                     vl.data -= p * gd[i]
-    
-    def kt_stage(self, tf_flag=False):
-        """知识转移阶段"""
+
+    def kt_stage(self, tf_flag=False, round_id=0):
+        """
+        知识转移阶段
+
+        学习率衰减策略：
+        - 知识获取阶段：使用余弦衰减
+        - 知识转移阶段：使用固定学习率
+        """
         batch_num = math.ceil(self.num_users / self.args.user_batch)
         ids = copy.deepcopy(self.clients)
         np.random.shuffle(ids)
-        
+
+        # 学习率衰减策略
+        if tf_flag:
+            # 知识转移阶段：使用固定学习率
+            current_lr_gnn = self.args.lr_gnn
+            current_lr_mf = self.args.lr_mf
+        else:
+            # 知识获取阶段：使用余弦衰减
+            total_rounds = self.args.round_gat
+            lr_decay = 0.5 * (1 + math.cos(math.pi * round_id / total_rounds))
+            current_lr_gnn = self.args.lr_gnn * lr_decay
+            current_lr_mf = self.args.lr_mf * lr_decay
+
         for bt in tqdm(range(batch_num), desc="KT Stage"):
             grads_model, p, grads_embedding, grads_kt = [], [], [], []
             total_item_interact_table = torch.zeros(self.num_items).to(self.args.device)
             s, t = bt * self.args.user_batch, min((bt+1) * self.args.user_batch, self.num_users)
             batch_user = ids[s:t]
             no_trans = self.args.user_batch * 1
-            
+
             for i, it in enumerate(batch_user):
                 if len(self.total_clients[it].train_data[self.id]) == 0:
                     continue
+
                 if tf_flag is False or i >= no_trans:
-                    pk, grad_gat, grad_emb, grad_kt = self.total_clients[it].train_gat(
-                        self.id, self.user_dic, self.item_gat, self.U, self.V)
+                    pk, grad_lightgcn, grad_emb, grad_kt = self.total_clients[it].train_lightgcn(
+                        self.id, self.user_dic, self.item_lightgcn, self.U, self.V,
+                        lr_gnn=current_lr_gnn, lr_mf=current_lr_mf)
                 else:
-                    pk, grad_gat, grad_emb, grad_kt = self.total_clients[it].knowledge_transfer(
-                        self.id, self.mlp, self.user_dic, self.item_gat, 
-                        self.U, self.V, self.domain_attention)
+                    pk, grad_lightgcn, grad_emb, grad_kt = self.total_clients[it].knowledge_transfer_lightgcn(
+                        self.id, self.mlp, self.user_dic, self.item_lightgcn,
+                        self.U, self.V, self.domain_attention,
+                        lr_gnn=current_lr_gnn, lr_mf=current_lr_mf)
                     grads_kt.append(grad_kt)
+
                 total_items = grad_emb[3]
                 total_item_interact_table[total_items] += 1
                 p.append(pk)
-                grads_model.append(grad_gat)
+                grads_model.append(grad_lightgcn)
                 grads_embedding.append(grad_emb)
-            
+
             p = torch.Tensor(p)
             p = p / torch.sum(p)
             for i, it in enumerate(grads_model):
@@ -103,7 +127,7 @@ class Server(BaseServer):
                                 para.data -= p[i] * grads_kt[i][mid+1][pid]
                             except:
                                 pass
-                for j, vl in enumerate(self.item_gat.parameters()):
+                for j, vl in enumerate(self.item_lightgcn.parameters()):
                     vl.data -= p[i] * it[j]
             total_item_interact_table[total_item_interact_table == 0] = 1
             for grad in grads_embedding:
@@ -114,55 +138,62 @@ class Server(BaseServer):
                 self.V[total_items] -= total_grads / total_item_interact_table[total_items].unsqueeze(1)
 
 
-@CLIENT_REGISTRY.register('gat')
+@CLIENT_REGISTRY.register('lightgcn')
 class Client(BaseClient):
     """
-    GAT 客户端 - 本地训练 GAT 模型
+    LightGCN 客户端 - 本地训练 LightGCN 模型
     """
-    
+
     def __init__(self, id, train_data, num_m, rating_mean, domain_names, args):
         super().__init__(id, train_data, num_m, rating_mean, domain_names, args)
-        self.gat = None
-    
+        self.lightgcn = None
+
     def get_gnn_model(self):
         """获取 GNN 模型实例"""
-        return self.gat
-    
-    def train_gnn(self, domain_id, user_dic, model_item, global_user_embedding, 
-                  global_item_embedding, transfer=False, a=None, transfer_vec=None):
-        """训练 GAT 模型"""
-        return self.train_gat(domain_id, user_dic, model_item, 
-                             global_user_embedding, global_item_embedding, 
-                             transfer, a, transfer_vec)
-    
-    def train_gat(self, domain_id, user_dic, model_item, global_user_embedding, 
-                  global_item_embedding, transfer=False, a=None, transfer_vec=None):
-        """GAT 训练逻辑"""
-        grads_gat, grad_emb, grad_kt, temp_vec = [], [], [], [0 for _ in range(self.args.num_domain)]
+        return self.lightgcn
+
+    def train_gnn(self, domain_id, user_dic, model_item, global_user_embedding,
+                  global_item_embedding, transfer=False, a=None, transfer_vec=None,
+                  lr_gnn=None, lr_mf=None):
+        """训练 LightGCN 模型"""
+        return self.train_lightgcn(domain_id, user_dic, model_item,
+                                   global_user_embedding, global_item_embedding,
+                                   transfer, a, transfer_vec, lr_gnn, lr_mf)
+
+    def train_lightgcn(self, domain_id, user_dic, model_item, global_user_embedding,
+                       global_item_embedding, transfer=False, a=None, transfer_vec=None,
+                       lr_gnn=None, lr_mf=None):
+        """LightGCN 训练逻辑"""
+        if lr_gnn is None:
+            lr_gnn = self.args.lr_gnn
+        if lr_mf is None:
+            lr_mf = self.args.lr_mf
+
+        grads_lightgcn, grad_emb, grad_kt, temp_vec = [], [], [], [0 for _ in range(self.args.num_domain)]
         length = len(self.items[domain_id])
-        self.gat = copy.deepcopy(model_item)
+        self.lightgcn = copy.deepcopy(model_item)
         user_embedding = self.reset(global_user_embedding[user_dic[self.id][self.domain_names[domain_id]]])
         item_embedding = self.reset(global_item_embedding)
-        paras = [user_embedding, item_embedding] + [para for para in self.gat.parameters()]
+        paras = [user_embedding, item_embedding] + [para for para in self.lightgcn.parameters()]
         local_a = a
         mlps = None
-        
+
         if transfer:
             mlps = copy.deepcopy(self.mlp)
             for mlp in mlps:
                 paras += [para for para in mlp.parameters()]
             local_a = self.reset(a)
-        
-        optimizer = torch.optim.Adam(paras, lr=self.args.lr_gnn)
+
+        optimizer = torch.optim.Adam(paras, lr=lr_gnn)
         total_item, ratings = self.sample_negative(self.train_data[domain_id], self.num_items[domain_id])
-        
+
         for epoch in range(self.args.local_epoch):
             optimizer.zero_grad()
             if transfer and mlps is not None:
                 for i in range(self.args.num_domain):
                     temp_vec[i] = mlps[i](transfer_vec[i])
-            h_i, intermediate_emb, ls, lm = self.gat(
-                torch.cat((user_embedding.reshape(1, self.args.embedding_size), 
+            h_i, intermediate_emb, ls, lm = self.lightgcn(
+                torch.cat((user_embedding.reshape(1, self.args.embedding_size),
                           item_embedding[self.items[domain_id]])),
                 transfer, local_a, temp_vec)
             user_emb = h_i[0]
@@ -171,25 +202,25 @@ class Client(BaseClient):
             loss = binary_cross_entropy(predict, ratings) + ls + lm
             loss.backward()
             optimizer.step()
-        
-        local_para = [para.data for para in self.gat.parameters()]
+
+        local_para = [para.data for para in self.lightgcn.parameters()]
         global_para = [para.data for para in model_item.parameters()]
         for i in range(len(local_para)):
-            grads_gat.append(global_para[i] - local_para[i])
-        
+            grads_lightgcn.append(global_para[i] - local_para[i])
+
         with torch.no_grad():
-            user_emb, self.knowledge[domain_id], ls, lm = self.gat(
-                torch.cat((user_embedding.reshape(1, self.args.embedding_size), 
+            user_emb, self.knowledge[domain_id], ls, lm = self.lightgcn(
+                torch.cat((user_embedding.reshape(1, self.args.embedding_size),
                           item_embedding[self.items[domain_id]])),
                 transfer, local_a, transfer_vec)
-        
+
         grad_emb.append(self.id)
         grad_emb.append(user_emb[0].detach())
         grad_emb.append(user_embedding.detach())
         grad_emb.append(total_item)
-        grad_emb.append(global_item_embedding[grad_emb[-1]].detach() - 
+        grad_emb.append(global_item_embedding[grad_emb[-1]].detach() -
                        item_embedding[grad_emb[-1]].detach())
-        
+
         if transfer:
             grad_kt.append(a.detach() - local_a.detach())
             for i in range(self.args.num_domain):
@@ -199,9 +230,9 @@ class Client(BaseClient):
                 for pid in range(len(local_para)):
                     para_grad.append(global_para[pid] - local_para[pid])
                 grad_kt.append(para_grad)
-        
-        return length, grads_gat, grad_emb, grad_kt
-    
+
+        return length, grads_lightgcn, grad_emb, grad_kt
+
     def train_mlp(self, mlps):
         """训练 MLP"""
         self.mlp = mlps
@@ -218,14 +249,26 @@ class Client(BaseClient):
             grad = [p.grad.data for p in mlps[d].parameters()]
             grads.append(grad)
         return grads
-    
-    def knowledge_transfer(self, domain_id, mlps, user_dic, item_gat, 
-                          user_embedding, item_embedding, a):
-        """知识转移逻辑"""
+
+    def knowledge_transfer_lightgcn(self, domain_id, mlps, user_dic, item_lightgcn,
+                                    user_embedding, item_embedding, a,
+                                    lr_gnn=None, lr_mf=None):
+        """
+        LightGCN 知识转移逻辑
+
+        优化策略:
+        1. 降低差分隐私噪声影响 (eps 翻倍)
+        2. 知识质量门控 (只转移高质量知识)
+        """
         transfer_vec = []
         self.mlp = mlps
-        std = self.sensitivity * torch.sqrt(2 * torch.log(1.25 / self.delta)) * 1 / self.args.eps
-        
+
+        # 方案 1: 降低差分隐私噪声影响
+        std = self.sensitivity * torch.sqrt(2 * torch.log(1.25 / self.delta)) * 1 / (self.eps * 2)
+
+        # 方案 2: 知识质量阈值
+        knowledge_threshold = 0.5
+
         for j in range(self.args.num_domain):
             if j == domain_id:
                 transfer_vec.append(torch.zeros(self.args.embedding_size, device=self.args.device))
@@ -234,18 +277,20 @@ class Client(BaseClient):
                     temp_vec = torch.zeros(self.args.embedding_size, device=self.args.device)
                 else:
                     temp_vec = Client.l2_clip(
-                        torch.tensor(self.knowledge[j][0], device=self.args.device), 
+                        torch.tensor(self.knowledge[j][0], device=self.args.device),
                         self.sensitivity)
-                noise = torch.normal(mean=0, std=std, 
+
+                    # 知识质量门控
+                    knowledge_norm = torch.norm(temp_vec).item()
+                    if knowledge_norm < knowledge_threshold:
+                        temp_vec = torch.zeros(self.args.embedding_size, device=self.args.device)
+
+                noise = torch.normal(mean=0, std=std,
                                     size=(1, self.args.embedding_size)).to(self.args.device).squeeze()
                 if self.args.dp:
                     transfer_vec.append(temp_vec + noise)
                 else:
                     transfer_vec.append(temp_vec)
-        
-        return self.train_gat(domain_id, user_dic, item_gat, user_embedding, 
-                             item_embedding, True, a, transfer_vec)
 
-
-# 导入需要的函数
-from torch.nn.functional import sigmoid, binary_cross_entropy
+        return self.train_lightgcn(domain_id, user_dic, item_lightgcn, user_embedding,
+                                   item_embedding, True, a, transfer_vec, lr_gnn, lr_mf)

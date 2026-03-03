@@ -1,25 +1,45 @@
+"""
+GAT 模型实现 - 图注意力网络
+
+用于 FedGCDR 联邦跨域推荐系统
+"""
+
 import torch.nn as nn
 import torch
+import sys
+import os
 
-# GATLayer实现了图注意力网络(Graph Attention Network)的基本单元,
-# 用于学习图中节点之间的关系权重。
+# 导入基类和注册表
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from base_model import BaseGNNLayer, BaseGNNModel, BaseMLP
+from registry import MODEL_REGISTRY
 
-# 单个图注意力层，使用可学习的注意力向量 A 计算节点间的注意力系数，并应用 softmax 激活函数
-# 来归一化注意力权重。前向传播方法接收输入特征和邻接矩阵，通过线性变换的组合计算注意力输出
-class GATLayer(nn.Module):
-    def __init__(self, in_feature, out_feature, alpha):
-        super().__init__()
-        #__`in_feature`__: 输入特征维度 (例如16)
-        self.in_feature = in_feature
-        #__`out_feature`__: 输出特征维度 (例如16)
-        self.out_feature = out_feature
-        # 注意力矩阵A,`A`的形状: `(2 * out_feature, 1)`
+
+class GATLayer(BaseGNNLayer):
+    """
+    GAT 层 - 图注意力网络层
+    
+    使用可学习的注意力向量 A 计算节点间的注意力系数
+    """
+    
+    def __init__(self, in_feature: int, out_feature: int, alpha: float = 0.1):
+        super().__init__(in_feature, out_feature)
+        # 注意力矩阵 A, 形状：(2 * out_feature, 1)
         self.A = nn.Parameter(torch.empty(size=(2 * out_feature, 1)))
         nn.init.xavier_uniform_(self.A.data, nn.init.calculate_gain('relu'))
         self.alpha = alpha
-
-    #向前传播
-    def forward(self, input, adj):
+    
+    def forward(self, input: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播
+        
+        Args:
+            input: 输入特征矩阵
+            adj: 邻接矩阵
+            
+        Returns:
+            输出特征矩阵
+        """
         h = input
         h1 = torch.matmul(h, self.A[self.out_feature:, :])
         h2 = torch.matmul(h, self.A[:self.out_feature, :])
@@ -31,47 +51,50 @@ class GATLayer(nn.Module):
         return ah
 
 
-class GAT(nn.Module):
-    def __init__(self, args, in_feature, hid_feature=16, out_feature=16, alpha=0.1, dropout=0):
-        super().__init__()
-        self.in_feature = in_feature
-        self.hid_feature = hid_feature
-        self.out_feature = out_feature
+@MODEL_REGISTRY.register('gat')
+class GAT(BaseGNNModel):
+    """
+    GAT 模型 - 图注意力网络
+    
+    两层 GAT 结构，用于学习用户 - 物品图的嵌入表示
+    """
+    
+    def __init__(self, args, in_feature: int, hid_feature: int = 16, 
+                 out_feature: int = 16, alpha: float = 0.1, dropout: float = 0):
+        super().__init__(args, in_feature, hid_feature, out_feature)
         self.drop = nn.Dropout(p=dropout)
         self.in2hidden = GATLayer(in_feature, hid_feature, alpha).to(args.device)
         self.hidden2out = GATLayer(hid_feature, out_feature, alpha).to(args.device)
-
-    @staticmethod
-    def compute_ls(f_t, f_s):
-        total_sim = 0
-        for fs in f_s:
-            with torch.no_grad():
-                sim = (torch.cosine_similarity(fs, f_t, dim=0) + 1) / 2
-                total_sim += sim
-        F_s = 0
-        for fs in f_s:
-            with torch.no_grad():
-                sim = (torch.cosine_similarity(fs, f_t, dim=0) + 1) / 2
-            F_s += sim * fs / total_sim
-        loss = torch.norm(f_t - F_s) ** 2
-        return loss
-
-    @staticmethod
-    def compute_lm(f_t, f_s):
-        loss = 0
-        for fs in f_s:
-            loss += torch.nn.functional.mse_loss(fs, f_t)
-        return loss
-
-    def forward(self, x, is_transfer_stage=False, domain_attention=None, transfer_vec=None):
+    
+    def forward(self, x: torch.Tensor, is_transfer_stage: bool = False,
+                domain_attention: torch.Tensor = None, 
+                transfer_vec: list = None) -> tuple:
+        """
+        前向传播
+        
+        Args:
+            x: 输入特征矩阵，第一行是用户嵌入，其他是物品嵌入
+            is_transfer_stage: 是否为知识转移阶段
+            domain_attention: 域注意力向量
+            transfer_vec: 待转移的知识向量列表
+            
+        Returns:
+            tuple: (x, intermediate_embedding, ls, lm)
+        """
         ls, lm = 0, 0
         alpha, beta = 0.01, 0.01
         intermediate_embedding = []
+        
+        # 构建邻接矩阵
         adj = torch.eye(len(x), device=x.device)
         adj[:, 0] = 1.
         adj[0, :] = 1.
+        
+        # 第一层
         x = self.in2hidden(x, adj)
         intermediate_embedding.append(x[0].data)
+        
+        # 知识转移阶段
         if is_transfer_stage:
             ls = alpha / 2 * self.compute_ls(x[0], transfer_vec)
             lm = beta / 2 * self.compute_lm(x[0], transfer_vec)
@@ -80,24 +103,19 @@ class GAT(nn.Module):
             adj = torch.eye(len(x), device=x.device)
             adj[:, 0] = 1.
             adj[0, :] = 1.
+        
+        # 第二层
         x = self.hidden2out(x, adj)
         return x, intermediate_embedding, ls, lm
 
-#核心功能: 知识向量转换
-#  __工作流程__
-# 1. __输入__: 从其他领域学到的知识向量 (维度16)
-# 2. __转换__: 通过MLP进行非线性变换
-# 3. __输出__: 适配目标域的知识向量 (维度仍为16)
-class MLP(nn.Module):
-    def __init__(self, in_feature):
-        super().__init__()
-        self.L1 = nn.Linear(in_feature, 2*in_feature)
-        self.L2 = nn.Linear(2*in_feature, int(in_feature/2))
-        self.L3 = nn.Linear(int(in_feature/2), in_feature)
-        self.f = nn.Tanh()
 
-    def forward(self, x):
-        x = self.f(self.L1(x))
-        x = self.f(self.L2(x))
-        x = self.f(self.L3(x))
-        return x
+@MODEL_REGISTRY.register('gat_mlp')
+class MLP(BaseMLP):
+    """
+    MLP - 知识向量转换网络
+    
+    将源域知识转换为目标域知识
+    """
+    
+    def __init__(self, in_feature: int):
+        super().__init__(in_feature, hidden_factor=2, dropout=0.0, activation='tanh')

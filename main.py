@@ -1,4 +1,4 @@
-import random
+﻿import random
 import numpy as np
 import pandas as pd
 import torch
@@ -13,6 +13,7 @@ import warnings
 import datetime
 import utility
 from checkpoint import CheckpointManager, restore_from_checkpoint, restore_target_domain
+from model import get_server_class, get_client_class, get_model_class, list_all_models
 
 
 def get_git_commit_hash():
@@ -31,6 +32,17 @@ def get_git_commit_hash():
     except Exception:
         return 'unknown'
 
+
+def get_model_display_name(gnn_type):
+    """根据gnn_type获取模型显示名称"""
+    model_names = {
+        'gat': 'GAT',
+        'lightgcn': 'LightGCN',
+        'graphsage': 'GraphSAGE',
+        'simgcl': 'SimGCL'
+    }
+    return model_names.get(gnn_type, gnn_type.upper())
+
 warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser(description='args for fedgcdr')
@@ -41,8 +53,8 @@ parser.add_argument('--num_domain', type=int, default=4)
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--target_domain', type=int, default=1)
 parser.add_argument('--lr_mf', type=float, default=0.005)
-parser.add_argument('--lr_gat', type=float, default=0.001)
-parser.add_argument('--lr_lightgcn', type=float, default=0.01)
+parser.add_argument('--lr_gnn', type=float, default=0.01,
+                    help='GNN模型统一学习率 (gat/lightgcn/graphsage/simgcl共用)')
 parser.add_argument('--embedding_size', type=int, default=16)
 parser.add_argument('--local_epoch', type=int, default=3)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
@@ -50,8 +62,8 @@ parser.add_argument('--num_negative', type=int, default=4)
 parser.add_argument('--user_batch', type=int, default=16)
 parser.add_argument('--model', type=str, default='fedgcdr')
 parser.add_argument('--gnn_type', type=str, default='lightgcn', 
-                    choices=['gat', 'lightgcn'],
-                    help='选择使用的图神经网络模型: gat(原始GAT) 或 lightgcn(LightGCN)')
+                    choices=['gat', 'lightgcn', 'graphsage', 'simgcl'],
+                    help='选择使用的图神经网络模型: gat或lightgcn')
 parser.add_argument('--knowledge', type=bool, default=False)
 parser.add_argument('--only_ft', type=bool, default=False)
 parser.add_argument('--eps', type=float, default=8)
@@ -100,18 +112,18 @@ if args.resume_from and not args.checkpoint_path:
     exit(1)
 
 # 根据gnn_type参数选择对应的模块
-if args.gnn_type == 'lightgcn':
-    print(f'使用LightGCN模型')
-    Server = importlib.import_module('model.' + args.model + '.party_lightgcn').Server
-    Client = importlib.import_module('model.' + args.model + '.party_lightgcn').Client
-    MLP = importlib.import_module('model.' + args.model + '.lightgcn_model').MLP
-else:
-    print(f'使用原始GAT模型')
-    Server = importlib.import_module('model.' + args.model + '.party').Server
-    Client = importlib.import_module('model.' + args.model + '.party').Client
-    MLP = importlib.import_module('model.' + args.model + '.model').MLP
+# 根据 gnn_type 参数选择对应的模型 - 使用模型注册表机制
+# 根据 gnn_type 参数选择对应的模型 - 使用模型注册表机制
 
-
+print(f'使用 {get_model_display_name(args.gnn_type)} 模型')
+try:
+    Server = get_server_class(args.gnn_type)
+    Client = get_client_class(args.gnn_type)
+    MLP = get_model_class(args.gnn_type + '_mlp')
+except KeyError as e:
+    print(f"错误：{e}")
+    print(f"可用的模型：{list_all_models()}")
+    exit(1)
 device = torch.device(args.device)
 
 domain_user, dic, domain_names = utility.set_dataset(args)
@@ -224,14 +236,14 @@ else:
         max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
         knowledge = [1] * args.num_users
         for i in range(args.round_gat):
-            model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
+            model_name = get_model_display_name(args.gnn_type)
             print(f'{server[it].domain_name} {model_name} round {i}: ' + formatted_date_time)
             if args.gnn_type == 'lightgcn':
                 server[it].kt_stage(round_id=i)
             else:
                 server[it].kt_stage()
             hr_5, ndcg_5, hr_10, ndcg_10 = server[it].test_gat(i)
-            model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
+            model_name = get_model_display_name(args.gnn_type)
             with open(output_file, 'a') as f:
                 f.write(
                     f'[{server[it].domain_name} {model_name} Round {i}] hr_5 = {hr_5:.4f}, ndcg_5 = {ndcg_5:.4f}, hr_10 = {hr_10:.4f},'
@@ -278,7 +290,7 @@ if args.only_ft is False and not skip_kt_training:
     max_hr, max_ndcg, epoch_id, no_improve = 0, 0, 0, 0
     training_success = False
     for i in range(args.round_gat):
-        model_name = 'LightGCN' if args.gnn_type == 'lightgcn' else 'GAT'
+        model_name = get_model_display_name(args.gnn_type)
         print(f'{server[tar_domain].domain_name} {model_name} round {i}: ' + formatted_date_time)
 
         try:
