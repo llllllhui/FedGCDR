@@ -61,12 +61,13 @@ class LightGCN(BaseGNNModel):
         super().__init__(args, in_feature, hid_feature, out_feature)
         self.num_layers = num_layers
         self.drop = nn.Dropout(p=dropout)
+        self.device = args.device
 
         # LightGCN 使用多个层，每层都是简单的邻接聚合
-        self.layers = nn.ModuleList([LightGCNLayer() for _ in range(num_layers)])
+        self.layers = nn.ModuleList([LightGCNLayer().to(self.device) for _ in range(num_layers)])
 
         # 残差连接投影层
-        self.res_proj = nn.Linear(hid_feature, hid_feature) if num_layers > 1 else None
+        self.res_proj = nn.Linear(hid_feature, hid_feature).to(self.device) if num_layers > 1 else None
 
     def forward(self, x: torch.Tensor, is_transfer_stage: bool = False,
                 domain_attention: torch.Tensor = None,

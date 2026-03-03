@@ -82,10 +82,11 @@ class SimGCL(BaseGNNModel):
         self.num_layers = num_layers
         self.eps = eps  # 噪声强度
         self.temp = temp  # 对比学习温度参数
-        
+        self.device = args.device
+
         # 构建多层
         self.layers = nn.ModuleList([
-            SimGCLLayer(eps=eps) for _ in range(num_layers)
+            SimGCLLayer(eps=eps).to(self.device) for _ in range(num_layers)
         ])
     
     def forward(self, x: torch.Tensor, is_transfer_stage: bool = False,

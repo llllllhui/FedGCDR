@@ -75,16 +75,17 @@ class GraphSAGE(BaseGNNModel):
         
         # 构建多层 GraphSAGE
         self.layers = nn.ModuleList()
-        
+        self.device = args.device
+
         # 输入层到隐藏层
-        self.layers.append(GraphSAGELayer(in_feature, hid_feature))
+        self.layers.append(GraphSAGELayer(in_feature, hid_feature).to(self.device))
         
         # 隐藏层
         for _ in range(num_layers - 2):
-            self.layers.append(GraphSAGELayer(hid_feature, hid_feature))
-        
+            self.layers.append(GraphSAGELayer(hid_feature, hid_feature).to(self.device))
+
         # 隐藏层到输出层
-        self.layers.append(GraphSAGELayer(hid_feature, out_feature))
+        self.layers.append(GraphSAGELayer(hid_feature, out_feature).to(self.device))
         
         self.dropout = nn.Dropout(dropout)
     
