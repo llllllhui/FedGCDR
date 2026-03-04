@@ -86,13 +86,23 @@ class CheckpointManager:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         # 2. 保存每个域的模型状态
+        # 根据gnn_type获取模型属性名
+        gnn_type = getattr(args, 'gnn_type', 'gat')
+        if gnn_type in ['graphsage', 'simgcl']:
+            item_model_attr = 'gnn_model'
+        elif gnn_type == 'lightgcn':
+            item_model_attr = 'item_lightgcn'
+        else:  # gat
+            item_model_attr = 'item_gat'
+
         model_states = {}
         for i, server in enumerate(servers):
             domain_key = f'domain_{i}_{server.domain_name}'
             model_states[domain_key] = {
                 'U': server.U.cpu(),
                 'V': server.V.cpu(),
-                'item_lightgcn': server.item_lightgcn.state_dict(),
+                'item_model': getattr(server, item_model_attr).state_dict(),
+                'item_model_attr': item_model_attr,  # 保存属性名以便恢复
                 'user_embedding_with_attention': server.user_embedding_with_attention.cpu() if hasattr(server, 'user_embedding_with_attention') else None,
                 'domain_attention': server.domain_attention.cpu() if hasattr(server, 'domain_attention') else None,
             }
@@ -179,13 +189,23 @@ class CheckpointManager:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         # 2. 保存所有域的模型状态（继承知识获取阶段）
+        # 根据gnn_type获取模型属性名
+        gnn_type = getattr(args, 'gnn_type', 'gat')
+        if gnn_type in ['graphsage', 'simgcl']:
+            item_model_attr = 'gnn_model'
+        elif gnn_type == 'lightgcn':
+            item_model_attr = 'item_lightgcn'
+        else:  # gat
+            item_model_attr = 'item_gat'
+
         model_states = {}
         for i, server in enumerate(servers):
             domain_key = f'domain_{i}_{server.domain_name}'
             model_states[domain_key] = {
                 'U': server.U.cpu(),
                 'V': server.V.cpu(),
-                'item_lightgcn': server.item_lightgcn.state_dict(),
+                'item_model': getattr(server, item_model_attr).state_dict(),
+                'item_model_attr': item_model_attr,
                 'user_embedding_with_attention': server.user_embedding_with_attention.cpu(),
                 'domain_attention': server.domain_attention.cpu(),
             }
@@ -440,8 +460,12 @@ def restore_from_checkpoint(servers, clients, model_states, knowledge, device, a
         server.U.data = state['U'].to(device)
         server.V.data = state['V'].to(device)
 
-        # 恢复LightGCN模型
-        server.item_lightgcn.load_state_dict(state['item_lightgcn'])
+        # 恢复GNN模型（根据保存的item_model_attr动态选择）
+        item_model_attr = state.get('item_model_attr', 'item_lightgcn')
+        if hasattr(server, item_model_attr):
+            getattr(server, item_model_attr).load_state_dict(state['item_model'])
+        else:
+            print(f"警告: 服务器没有属性 {item_model_attr}")
 
         # 恢复注意力相关状态（如果存在）
         if state.get('user_embedding_with_attention') is not None:
